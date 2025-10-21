@@ -43,10 +43,10 @@ func buildProject(appPath, outPath string) error {
 	// Step 2: GOOS=linux GOARCH=amd64 go build -o "$OUT_PATH" .
 	cmdBuild := exec.Command("go", "build", "-o", outPath, ".")
 	cmdBuild.Dir = absAppPath
-	cmdBuild.Env = append(os.Environ(),
-		"GOOS=linux",
-		"GOARCH=amd64",
-	)
+	//cmdBuild.Env = append(os.Environ(),
+	//	"GOOS=linux",
+	//	"GOARCH=amd64",
+	//)
 	cmdBuild.Stdout = os.Stdout
 	cmdBuild.Stderr = os.Stderr
 	if err := cmdBuild.Run(); err != nil {
