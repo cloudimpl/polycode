@@ -19,7 +19,7 @@ type RuntimeInfo struct {
 const runtimeFileTemplate = `package _polycode
 
 import (
-	runtime "github.com/cloudimpl/polycode-runtime-go"
+	runtime "github.com/cloudimpl/polycode-runtime/go"
 )
 
 func init() {

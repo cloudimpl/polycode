@@ -42,7 +42,7 @@ const serviceFileTemplate = `package _polycode
 
 import (
 	"errors"
-	"github.com/cloudimpl/polycode-runtime-go/sdk"
+	"github.com/cloudimpl/polycode-runtime/go/sdk"
 	"strings"
     service "{{.ModuleName}}/services/{{.ServiceName}}"
 	{{range .Imports}}"{{.}}"
