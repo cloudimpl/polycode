@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"github.com/cloudimpl/polycode/core"
 	_go "github.com/cloudimpl/polycode/go"
-	"github.com/fsnotify/fsnotify"
 	"io"
 	"log"
 	"net/http"
@@ -54,9 +53,6 @@ func main() {
 
 	case "build":
 		cmdBuild(os.Args[2:])
-
-	case "run":
-		cmdRun(os.Args[2:])
 
 	case "extract":
 		cmdExtract(os.Args[2:])
@@ -181,12 +177,10 @@ func cmdBuild(args []string) {
 	var (
 		appLanguage string
 		outputPath  string
-		watchFlag   bool
 	)
 
 	fs.StringVar(&appLanguage, "language", "auto", "Application language (supported: go)")
 	fs.StringVar(&outputPath, "out", "", "Output path for generated code (default: <app-path>/app)")
-	fs.BoolVar(&watchFlag, "watch", false, "Watch <app-path>/services and rebuild on changes")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage:\n  polycode build <app-path> [options]\n\nOptions:\n")
 		fs.PrintDefaults()
@@ -230,104 +224,8 @@ func cmdBuild(args []string) {
 		log.Fatalf("language %q is not supported", appLanguage)
 	}
 
-	if watchFlag {
-		servicesPath := filepath.Join(appPath, "services")
-		log.Printf("watching: %s", servicesPath)
-		watch(servicesPath, func(event fsnotify.Event) {
-			_ = g.OnChange(appPath, outputPath, event)
-		})
-		return
-	}
-
 	if err := g.Generate(appPath, outputPath); err != nil {
 		log.Fatalf("failed to build: %v", err)
-	}
-}
-
-// ========================= run =========================
-
-// polycode run <app-path>
-// - Builds into <app-path>/app (like build)
-// - For Go: builds binary into .polycode/app and runs it
-func cmdRun(args []string) {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-
-	var (
-		appLanguage string
-	)
-	fs.StringVar(&appLanguage, "language", "auto", "Application language (supported: go)")
-	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage:\n  polycode run <app-path> [options]\n\nOptions:\n")
-		fs.PrintDefaults()
-	}
-
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return
-		}
-		os.Exit(2)
-	}
-	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "missing required <app-path>")
-		fs.Usage()
-		os.Exit(2)
-	}
-	appPath := fs.Arg(0)
-
-	// detect language
-	if appLanguage == "" || appLanguage == "auto" {
-		appLanguage = detectLanguage(appPath)
-		if appLanguage == "" {
-			log.Fatalf("unable to detect language for %s — please specify with -language", appPath)
-		}
-		fmt.Println("Detected language:", appLanguage)
-	}
-
-	// 1) build
-	if err := os.MkdirAll(filepath.Join(appPath, "app"), 0o755); err != nil {
-		log.Fatalf("failed to create app folder: %v", err)
-	}
-	cmdBuild([]string{appPath, "-language", appLanguage})
-
-	// 2) build & run (language-specific)
-	switch appLanguage {
-	case "go":
-		binDir := filepath.Join(appPath, ".polycode")
-		_ = os.MkdirAll(binDir, 0o755)
-		bin := filepath.Join(binDir, "app")
-		// go mod tidy at root (in case builder added deps)
-		_ = runCmd(appPath, "go", "mod", "tidy")
-		// build the generated app
-		if err := runCmd(appPath, "go", "build", "-o", bin, "./app"); err != nil {
-			log.Fatalf("build binary failed: %v", err)
-		}
-		fmt.Printf("▶ Running %s\n\n", bin)
-		// exec the app and proxy signals
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		cmd := exec.CommandContext(ctx, bin)
-		cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
-		if err := cmd.Start(); err != nil {
-			log.Fatalf("failed to start: %v", err)
-		}
-		done := make(chan struct{})
-		go func() {
-			handleSignals(func() {
-				gracefulStop(cmd.Process)
-			})
-			_ = cmd.Wait()
-			close(done)
-		}()
-		<-done
-
-	case "java":
-		log.Fatalf("run: java pipeline not implemented yet")
-	case "python":
-		log.Fatalf("run: python pipeline not implemented yet")
-	default:
-		log.Fatalf("run: unsupported language %q", appLanguage)
 	}
 }
 
@@ -475,70 +373,6 @@ func runExtractor(client, out, callback, cwd string) {
 }
 
 // ========================= helpers =========================
-
-func watch(watchPath string, onChange func(event fsnotify.Event)) {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		log.Fatalf("failed to create watcher: %v", err)
-	}
-	defer watcher.Close()
-
-	// Handle OS signals for graceful shutdown
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
-
-				// auto-add new directories
-				if event.Op&fsnotify.Create == fsnotify.Create {
-					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-						if err := watcher.Add(event.Name); err != nil {
-							log.Printf("failed to watch new dir %s: %v", event.Name, err)
-						}
-					}
-				}
-
-				if event.Op&fsnotify.Write == fsnotify.Write {
-					onChange(event)
-				}
-
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					return
-				}
-				log.Printf("watcher error: %v", err)
-			}
-		}
-	}()
-
-	// initial walk
-	err = filepath.Walk(watchPath, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			log.Printf("walk error on %s: %v", p, err)
-			return err
-		}
-		if info.IsDir() {
-			return watcher.Add(p)
-		}
-		return nil
-	})
-	if err != nil {
-		log.Fatalf("failed to initialize watcher: %v", err)
-	}
-
-	// Block forever; exit on signal
-	handleSignals(func() {
-		watcher.Close()
-	})
-
-	<-done
-}
 
 func handleSignals(onTerm func()) {
 	sig := make(chan os.Signal, 1)
@@ -764,27 +598,19 @@ Usage:
 
 Commands:
   new        Create a new project from the getting-started repo
-  build      Build code from an app folder (with optional watch mode)
-  run        Build then run the app (Go supported)
-  extract    Run a client binary and capture its startup POST payload
+  build      Build code from an app folder
+  extract    Run app binary and capture its startup POST payload
 
 Run 'polycode <command> -h' for more details.
 
 Examples:
   # Create a new project
   polycode new myapp -language go
-  cd myapp
-  polycode build .
-  go run ./app
 
   # Build in-place
-  polycode build ./myapp -language go -out ./myapp/app
-  polycode build ./myapp -watch
-
-  # Run (build + binary + execute)
-  polycode run ./myapp
+  polycode build ./myapp
 
   # Extract startup metadata from an app binary
-  polycode extract ./bin/myclient -out ./meta.json -callback http://localhost:8080/hook -cwd ./sandbox
+  polycode extract ./myapp/app
 `)
 }
