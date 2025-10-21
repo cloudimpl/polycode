@@ -1,0 +1,53 @@
+name: Publish version
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  create_tag:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # Step 2: Set up Git for tagging
+      - name: Set up Git for tagging
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+      # Step 3: Get the latest tag and increment the minor version
+      - name: Get latest tag and increment
+        id: get_tag
+        run: |
+          # Fetch all tags
+          git fetch --tags
+
+          # Get the latest tag version
+          latest_tag=$(git describe --tags --abbrev=0 || echo "v0.0.0")
+          echo "Latest tag: $latest_tag"
+
+          # Extract the version numbers (major, minor, patch)
+          major=$(echo $latest_tag | cut -d. -f1 | cut -dv -f2)
+          minor=$(echo $latest_tag | cut -d. -f2)
+          patch=$(echo $latest_tag | cut -d. -f3)
+
+          # Increment the minor version and reset patch to 0
+          new_minor=$((minor + 1))
+          new_version="v${major}.${new_minor}.0"
+
+          # Write the new version to the GITHUB_OUTPUT file for later use
+          echo "tag=$new_version" >> $GITHUB_OUTPUT
+
+      # Step 4: Create and push the new tag
+      - name: Create new tag
+        run: |
+          new_tag="${{ steps.get_tag.outputs.tag }}"
+          git tag $new_tag
+          git push origin $new_tag
