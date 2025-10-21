@@ -26,6 +26,9 @@ const (
 	capturePath = "/v1/system/app/start"
 	timeout     = 60 * time.Second
 	grace       = 1500 * time.Millisecond
+
+	gettingStartedRepo   = "https://github.com/cloudimpl/polycode-getting-started.git"
+	defaultGettingBranch = "main"
 )
 
 // Language -> Generator
@@ -46,11 +49,22 @@ func main() {
 		printRootUsage()
 		return
 
-	case "generate":
-		cmdGenerate(os.Args[2:])
+	case "new":
+		cmdNew(os.Args[2:])
+
+	case "build":
+		cmdBuild(os.Args[2:])
+
+	case "run":
+		cmdRun(os.Args[2:])
 
 	case "extract":
 		cmdExtract(os.Args[2:])
+
+	// Optional compatibility alias (uncomment if you want to keep it)
+	// case "generate":
+	// 	fmt.Fprintln(os.Stderr, "warning: 'generate' is deprecated; use 'build' instead")
+	// 	cmdBuild(os.Args[2:])
 
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", os.Args[1])
@@ -59,10 +73,109 @@ func main() {
 	}
 }
 
-// ========================= generate =========================
+// ========================= new =========================
 
-func cmdGenerate(args []string) {
-	fs := flag.NewFlagSet("generate", flag.ContinueOnError)
+// polycode new <project-name> [options]
+func cmdNew(args []string) {
+	fs := flag.NewFlagSet("new", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	var (
+		projectName string
+		lang        string
+		repo        string
+		branch      string
+	)
+	fs.StringVar(&lang, "language", "go", "Template language: go | java | python")
+	fs.StringVar(&repo, "repo", gettingStartedRepo, "Getting started repo (advanced)")
+	fs.StringVar(&branch, "branch", defaultGettingBranch, "Repo branch (advanced)")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage:\n  polycode new <project-name> [options]\n\nOptions:\n")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return
+		}
+		os.Exit(2)
+	}
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "missing required <project-name>")
+		fs.Usage()
+		os.Exit(2)
+	}
+	projectName = fs.Arg(0)
+
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	switch lang {
+	case "go", "java", "python":
+	default:
+		log.Fatalf("unsupported language %q (use: go | java | python)", lang)
+	}
+
+	dest := projectName
+	if _, err := os.Stat(dest); err == nil {
+		log.Fatalf("destination folder %q already exists", dest)
+	}
+
+	// 1) clone into a temp dir
+	tmpDir, err := os.MkdirTemp("", "polycode-gs-*")
+	if err != nil {
+		log.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	log.Printf("Cloning %s (branch %s)...", repo, branch)
+	if err := runCmd(".", "git", "clone", "--depth", "1", "--branch", branch, repo, tmpDir); err != nil {
+		log.Fatalf("git clone failed: %v", err)
+	}
+
+	// 2) copy the language subfolder into projectName
+	src := filepath.Join(tmpDir, lang)
+	if st, err := os.Stat(src); err != nil || !st.IsDir() {
+		log.Fatalf("template subfolder not found: %s", src)
+	}
+	if err := copyTree(src, dest); err != nil {
+		log.Fatalf("failed to copy template: %v", err)
+	}
+
+	// 3) language-specific tweaks
+	switch lang {
+	case "go":
+		// replace _getting_started in go.mod and .go files
+		if err := replaceInFiles(dest, []string{".go", ".mod"}, "_getting_started", projectName); err != nil {
+			log.Fatalf("failed to apply replacements: %v", err)
+		}
+		// run go mod tidy
+		if err := runCmd(dest, "go", "mod", "tidy"); err != nil {
+			log.Printf("warning: go mod tidy failed: %v", err)
+		}
+	case "java":
+		// add Java-specific replacements if your template needs it
+	case "python":
+		// add Python-specific replacements if your template needs it
+	}
+
+	fmt.Printf("\n✅ Created %q from %s/%s template.\n\n", projectName, filepath.Base(repo), lang)
+	fmt.Println("Next steps:")
+	fmt.Printf("  cd %s\n", projectName)
+	switch lang {
+	case "go":
+		fmt.Println("  polycode build .")
+		fmt.Println("  go run ./app      # or: go build -o appbin ./app && ./appbin")
+	case "java":
+		fmt.Println("  # TODO: build & run steps for Java template")
+	case "python":
+		fmt.Println("  # TODO: build & run steps for Python template")
+	}
+	fmt.Println()
+}
+
+// ========================= build =========================
+
+func cmdBuild(args []string) {
+	fs := flag.NewFlagSet("build", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
 	var (
@@ -73,9 +186,9 @@ func cmdGenerate(args []string) {
 
 	fs.StringVar(&appLanguage, "language", "auto", "Application language (supported: go)")
 	fs.StringVar(&outputPath, "out", "", "Output path for generated code (default: <app-path>/app)")
-	fs.BoolVar(&watchFlag, "watch", false, "Watch <app-path>/services and regenerate on changes")
+	fs.BoolVar(&watchFlag, "watch", false, "Watch <app-path>/services and rebuild on changes")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage:\n  polycode generate <app-path> [options]\n\nOptions:\n")
+		fmt.Fprintf(fs.Output(), "Usage:\n  polycode build <app-path> [options]\n\nOptions:\n")
 		fs.PrintDefaults()
 	}
 
@@ -127,7 +240,94 @@ func cmdGenerate(args []string) {
 	}
 
 	if err := g.Generate(appPath, outputPath); err != nil {
-		log.Fatalf("failed to generate code: %v", err)
+		log.Fatalf("failed to build: %v", err)
+	}
+}
+
+// ========================= run =========================
+
+// polycode run <app-path>
+// - Builds into <app-path>/app (like build)
+// - For Go: builds binary into .polycode/app and runs it
+func cmdRun(args []string) {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	var (
+		appLanguage string
+	)
+	fs.StringVar(&appLanguage, "language", "auto", "Application language (supported: go)")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage:\n  polycode run <app-path> [options]\n\nOptions:\n")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return
+		}
+		os.Exit(2)
+	}
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "missing required <app-path>")
+		fs.Usage()
+		os.Exit(2)
+	}
+	appPath := fs.Arg(0)
+
+	// detect language
+	if appLanguage == "" || appLanguage == "auto" {
+		appLanguage = detectLanguage(appPath)
+		if appLanguage == "" {
+			log.Fatalf("unable to detect language for %s — please specify with -language", appPath)
+		}
+		fmt.Println("Detected language:", appLanguage)
+	}
+
+	// 1) build
+	if err := os.MkdirAll(filepath.Join(appPath, "app"), 0o755); err != nil {
+		log.Fatalf("failed to create app folder: %v", err)
+	}
+	cmdBuild([]string{appPath, "-language", appLanguage})
+
+	// 2) build & run (language-specific)
+	switch appLanguage {
+	case "go":
+		binDir := filepath.Join(appPath, ".polycode")
+		_ = os.MkdirAll(binDir, 0o755)
+		bin := filepath.Join(binDir, "app")
+		// go mod tidy at root (in case builder added deps)
+		_ = runCmd(appPath, "go", "mod", "tidy")
+		// build the generated app
+		if err := runCmd(appPath, "go", "build", "-o", bin, "./app"); err != nil {
+			log.Fatalf("build binary failed: %v", err)
+		}
+		fmt.Printf("▶ Running %s\n\n", bin)
+		// exec the app and proxy signals
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, bin)
+		cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
+		if err := cmd.Start(); err != nil {
+			log.Fatalf("failed to start: %v", err)
+		}
+		done := make(chan struct{})
+		go func() {
+			handleSignals(func() {
+				gracefulStop(cmd.Process)
+			})
+			_ = cmd.Wait()
+			close(done)
+		}()
+		<-done
+
+	case "java":
+		log.Fatalf("run: java pipeline not implemented yet")
+	case "python":
+		log.Fatalf("run: python pipeline not implemented yet")
+	default:
+		log.Fatalf("run: unsupported language %q", appLanguage)
 	}
 }
 
@@ -480,23 +680,111 @@ func detectLanguage(appPath string) string {
 	}
 }
 
+// ---------- local file ops / utilities ----------
+
+func runCmd(dir string, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func copyTree(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, path)
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm())
+		}
+		// file
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	})
+}
+
+func replaceInFiles(root string, exts []string, old, new string) error {
+	extSet := map[string]struct{}{}
+	for _, e := range exts {
+		extSet[e] = struct{}{}
+	}
+	return filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		ext := filepath.Ext(p)
+		if _, ok := extSet[ext]; !ok && !(strings.HasSuffix(p, "go.mod") && contains(exts, ".mod")) {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		nb := []byte(strings.ReplaceAll(string(b), old, new))
+		if !bytes.Equal(b, nb) {
+			// atomic-ish write
+			tmp := p + ".tmp"
+			if err := os.WriteFile(tmp, nb, info.Mode().Perm()); err != nil {
+				return err
+			}
+			if err := os.Rename(tmp, p); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func contains(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
 func printRootUsage() {
-	fmt.Println(`polycode — code generator & extractor
+	fmt.Println(`polycode — project scaffolding, build & extractor
 
 Usage:
   polycode <command> [arguments]
 
 Commands:
-  generate   Generate code from an app folder (with optional watch mode)
+  new        Create a new project from the getting-started repo
+  build      Build code from an app folder (with optional watch mode)
+  run        Build then run the app (Go supported)
   extract    Run a client binary and capture its startup POST payload
 
 Run 'polycode <command> -h' for more details.
 
 Examples:
-  polycode generate ./myapp -language go -out ./myapp/app
-  polycode generate ./myapp -watch
+  # Create a new project
+  polycode new myapp -language go
+  cd myapp
+  polycode build .
+  go run ./app
 
-  polycode extract ./bin/myclient
+  # Build in-place
+  polycode build ./myapp -language go -out ./myapp/app
+  polycode build ./myapp -watch
+
+  # Run (build + binary + execute)
+  polycode run ./myapp
+
+  # Extract startup metadata from an app binary
   polycode extract ./bin/myclient -out ./meta.json -callback http://localhost:8080/hook -cwd ./sandbox
 `)
 }
