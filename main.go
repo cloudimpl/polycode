@@ -135,7 +135,7 @@ func cmdExtract(args []string) {
 		cwd      string
 	)
 
-	fs.StringVar(&out, "out", "", "Output file to write sanitized captured JSON (required)")
+	fs.StringVar(&out, "out", "app.json", "Optional output file to write sanitized captured JSON (required)")
 	fs.StringVar(&callback, "callback", "", "Optional HTTP URL to POST {\"data\": <sanitized>} to")
 	fs.StringVar(&cwd, "cwd", "", "Optional working directory to run the client in")
 	fs.Usage = func() {
@@ -459,7 +459,7 @@ Examples:
   polycode generate ./myapp -language go -out ./myapp/app
   polycode generate ./myapp -watch
 
-  polycode extract ./bin/myclient -out ./meta.json
+  polycode extract ./bin/myclient
   polycode extract ./bin/myclient -out ./meta.json -callback http://localhost:8080/hook -cwd ./sandbox
 `)
 }
