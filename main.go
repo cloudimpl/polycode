@@ -71,7 +71,7 @@ func cmdGenerate(args []string) {
 		watchFlag   bool
 	)
 
-	fs.StringVar(&appLanguage, "language", "go", "Application language (supported: go)")
+	fs.StringVar(&appLanguage, "language", "auto", "Application language (supported: go)")
 	fs.StringVar(&outputPath, "out", "", "Output path for generated code (default: <app-path>/app)")
 	fs.BoolVar(&watchFlag, "watch", false, "Watch <app-path>/services and regenerate on changes")
 	fs.Usage = func() {
@@ -92,6 +92,14 @@ func cmdGenerate(args []string) {
 		os.Exit(2)
 	}
 	appPath := fs.Arg(0)
+
+	if appLanguage == "" || appLanguage == "auto" {
+		appLanguage = detectLanguage(appPath)
+		if appLanguage == "" {
+			log.Fatalf("unable to detect language for %s — please specify with -language", appPath)
+		}
+		fmt.Println("Detected language:", appLanguage)
+	}
 
 	// Defaults
 	if outputPath == "" {
@@ -441,6 +449,35 @@ func errorsIsClosed(err error) bool {
 	// treat server closed as non-fatal without importing net.ErrClosed (older Go) or http.ErrServerClosed
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "closed network connection") || strings.Contains(msg, "server closed")
+}
+
+func detectLanguage(appPath string) string {
+	files, _ := os.ReadDir(appPath)
+	hasGo, hasJava, hasPython := false, false, false
+
+	for _, f := range files {
+		name := f.Name()
+		switch {
+		case name == "go.mod" || strings.HasSuffix(name, ".go"):
+			hasGo = true
+		case name == "pom.xml" || strings.HasPrefix(name, "build.gradle"):
+			hasJava = true
+		case name == "pyproject.toml" || name == "setup.py" || strings.HasSuffix(name, ".py"):
+			hasPython = true
+		}
+	}
+
+	// Priority order if multiple found (tune to your project needs)
+	switch {
+	case hasGo:
+		return "go"
+	case hasJava:
+		return "java"
+	case hasPython:
+		return "python"
+	default:
+		return ""
+	}
 }
 
 func printRootUsage() {
