@@ -63,19 +63,21 @@ func generateRuntime(appPath string) error {
 			return err
 		}
 
-		runtimeInfo := RuntimeInfo{
-			Services: services,
-		}
+		if services != nil && len(services) > 0 {
+			runtimeInfo := RuntimeInfo{
+				Services: services,
+			}
 
-		err = tmpl.Execute(&buf, runtimeInfo)
-		if err != nil {
-			return err
-		}
+			err = tmpl.Execute(&buf, runtimeInfo)
+			if err != nil {
+				return err
+			}
 
-		err = os.WriteFile(appPath+"/.polycode/runtime.go", []byte(buf.String()), 0644)
-		if err != nil {
-			fmt.Printf("Error writing file: %v\n", err)
-			return err
+			err = os.WriteFile(appPath+"/.polycode/runtime.go", []byte(buf.String()), 0644)
+			if err != nil {
+				fmt.Printf("Error writing file: %v\n", err)
+				return err
+			}
 		}
 	}
 
